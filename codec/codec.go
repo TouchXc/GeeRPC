@@ -35,7 +35,7 @@ var NewCodecFuncMap map[Type]NewCodecFunc
 
 func init() {
 	NewCodecFuncMap = make(map[Type]NewCodecFunc)
-	//NewCodecFuncMap[GobType] = NewGobCodec
+	NewCodecFuncMap[GobType] = NewGobCodec
 }
 
 type GobCodec struct {
@@ -49,9 +49,9 @@ type GobCodec struct {
 var _ Codec = (*GobCodec)(nil)
 
 // NewGobCodec 创建GobCodec对象返回
-func NewGobCodec(conn io.ReadWriteCloser) GobCodec {
+func NewGobCodec(conn io.ReadWriteCloser) Codec {
 	buf := bufio.NewWriter(conn)
-	return GobCodec{
+	return &GobCodec{
 		conn: conn,
 		buf:  buf,
 		dec:  gob.NewDecoder(conn),

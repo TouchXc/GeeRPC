@@ -1,10 +1,13 @@
 package geerpc
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"geerpc/codec"
 	"io"
+	"log"
+	"net"
 	"sync"
 )
 
@@ -121,4 +124,116 @@ func (client *Client) receive() {
 		}
 	}
 	client.terminateCall(err)
+}
+
+// NewClient 创建客户端实例
+func NewClient(conn net.Conn, opt *Option) (*Client, error) {
+	//先获取消息体的编码方式，没有就直接返回错误
+	f := codec.NewCodecFuncMap[opt.CodecType]
+	if f == nil {
+		err := fmt.Errorf("invalid codec type %s", opt.CodecType)
+		log.Println("rpc client: codec error:", err)
+		return nil, err
+	}
+	if err := json.NewEncoder(conn).Encode(opt); err != nil {
+		log.Println("rpc client: options error: ", err)
+		_ = conn.Close()
+		return nil, err
+	}
+	return newClientCodec(f(conn), opt), nil
+}
+
+func newClientCodec(cc codec.Codec, opt *Option) *Client {
+	client := &Client{
+		cc:      cc,
+		opt:     opt,
+		seq:     1,
+		pending: make(map[uint64]*Call),
+	}
+	//创建子协程接受请求
+	go client.receive()
+	return client
+}
+
+// parseOptions 把Option实现为可选参数，方便用户调用
+func parseOptions(opts ...*Option) (*Option, error) {
+	if len(opts) == 0 || opts[0] == nil {
+		return DefaultOption, nil
+	}
+	if len(opts) != 1 {
+		return nil, errors.New("number of options is more than 1")
+	}
+	opt := opts[0]
+	opt.MagicNumber = DefaultOption.MagicNumber
+	if opt.CodecType == "" {
+		opt.CodecType = DefaultOption.CodecType
+	}
+	return opt, nil
+}
+
+// Dial 函数方便用户对服务端特定地址进行调用
+func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+	opt, err := parseOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if client == nil {
+			_ = conn.Close()
+		}
+	}()
+	return NewClient(conn, opt)
+}
+
+// 下面是为客户端添加发送请求的能力
+func (client *Client) send(call *Call) {
+	client.sending.Lock()
+	defer client.sending.Unlock()
+
+	seq, err := client.registerCall(call)
+	if err != nil {
+		call.Error = err
+		call.done()
+		return
+	}
+	//组装好完整请求头
+	client.header.Seq = seq
+	client.header.Error = ""
+	client.header.ServiceMethod = call.ServiceMethod
+
+	if err = client.cc.Write(&client.header, call.Args); err != nil {
+		//发送请求时出错
+		call = client.removeCall(seq)
+		if call != nil {
+			call.Error = err
+			call.done()
+		}
+	}
+}
+
+//下面定义了两个暴露给用户的RPC接口，Go用于异步返回call实例  Call调用Go并使其阻塞直到响应返回
+
+func (client *Client) Go(serviceMethod string, args, reply interface{}, done chan *Call) *Call {
+	if done == nil {
+		done = make(chan *Call, 10)
+	} else if cap(done) == 0 {
+		log.Panic("rpc client: done channel is unbuffered")
+	}
+	call := &Call{
+		ServiceMethod: serviceMethod,
+		Args:          args,
+		Reply:         reply,
+		Done:          done,
+	}
+	client.send(call)
+	return call
+}
+
+func (client *Client) Call(serviceMethod string, args, reply interface{}) error {
+	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
+	return call.Error
 }
