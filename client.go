@@ -1,6 +1,7 @@
 package geerpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -162,6 +165,37 @@ func newClientCodec(cc codec.Codec, opt *Option) *Client {
 	//创建子协程接受请求
 	go client.receive()
 	return client
+}
+func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
+	if err == nil && resp.Status == connected {
+		return NewClient(conn, opt)
+	}
+	if err == nil {
+		err = errors.New("unexpected HTTP response: " + resp.Status)
+	}
+	return nil, err
+}
+func DialHTTP(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, network, address, opts...)
+}
+func XDial(rpcAddr string, opts ...*Option) (*Client, error) {
+	//分割请求的地址和协议 例如：http@10.0.0.1:7001  tcp@10.0.0.1:9999  unix@/tmp/geerpc.sock
+	parts := strings.Split(rpcAddr, "@")
+	//分割出现错误直接报错
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocol@addr", rpcAddr)
+	}
+	//拿到通信协议和请求地址
+	protocol, addr := parts[0], parts[1]
+	//根据通信协议和请求地址调用方法
+	switch protocol {
+	case "http":
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		return Dial(protocol, addr, opts...)
+	}
 }
 
 // parseOptions 把Option实现为可选参数，方便用户调用
