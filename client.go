@@ -65,6 +65,13 @@ func (client *Client) Close() error {
 	return client.cc.Close()
 }
 
+// IsAvailable 根据类中的两个字段shutdown和closing判断客户端是否可用
+func (client *Client) IsAvailable() bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return !client.shutdown && !client.closing
+}
+
 //下面是Call类型相关的方法实现，调用rpc方法时，需要对调用进行存储然后进一步处理，而调用完的方法则需要移除
 
 // registerCall：将参数 call 添加到 client.pending 中，并更新 client.seq。
